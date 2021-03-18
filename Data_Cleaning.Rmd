@@ -1,0 +1,410 @@
+---
+title: "Data_Cleaning"
+author: "Joy_Fu"
+date: "3/13/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# 0. Basic setups and read in ADAMS data (SAS datasets)
+```{r message=FALSE, warning=FALSE, paged.print=FALSE}
+library(tidyverse)
+library(readxl)
+library(writexl)
+library(haven)   # read in SAS file
+library(sjlabelled)
+
+raw_data_path = '~/Desktop/AD_Grant/HRS_raw/'
+output_path = '~/Desktop/2021_Winter/BEM228/Final_project/output/'
+
+# ADAMS Original dataset
+tracker = read_sas(paste0(raw_data_path, 'adams1trk_r.sas7bdat'))
+tracker = remove_all_labels(tracker)
+wave_A = read_sas(paste0(raw_data_path, 'adams1ad_r.sas7bdat'))
+wave_A = remove_all_labels(wave_A)
+wave_B = read_sas(paste0(raw_data_path, 'adams1bd_r.sas7bdat'))
+wave_B = remove_all_labels(wave_B)
+wave_C = read_sas(paste0(raw_data_path, 'adams1cd_r.sas7bdat'))
+wave_C = remove_all_labels(wave_C)
+wave_D = read_sas(paste0(raw_data_path, 'adams1dd_r.sas7bdat'))
+wave_D = remove_all_labels(wave_D)
+
+# HRS RAND and full file
+# raw_dataset = 'hrs_democoggen_wide20190813.Rda'
+raw_dataset = 'HRS_democoggen_wide20200309.Rda'
+load(paste0(raw_data_path, raw_dataset)) # -- N = 43,232
+rand_dataset = 'randhrs1992_2016v2.rda'
+load(paste0(raw_data_path, rand_dataset)) # -- N = 42,052
+
+# Kunkle PGS
+load(paste0(raw_data_path, "european_kunkle_pgss.rda"))
+load(paste0(raw_data_path, "african_kunkle_pgss.rda"))
+```
+
+# 1. Clean variables to make ground-truth variables
+## 1) Join all waves together
+```{r message=FALSE, warning=FALSE}
+wave_A_short =
+  wave_A %>% 
+  mutate(AD_gold_A = case_when(
+    ADFDX1 %in% c(1,2,3,4,5,6,7,8,10,11,13,14,15,16,17,18,19,32) ~ 2,   
+    ADFDX1 %in% c(20,21,22,23,24,25,26,27,28,29,30,33) ~ 1,
+    ADFDX1 == 31 ~ 0
+  )) %>% 
+  select(HHID, PN, ADAMSSID, AD_gold_A) %>% 
+  left_join(tracker) %>% 
+  filter(VITSTAT == 1) %>% 
+  rename(ADAMS_YEAR = AYEAR,
+         ADAMS_MONTH = AMONTH) %>% 
+  mutate(ADAMS_WAVE_A = ADAMS_YEAR + ADAMS_MONTH/12) %>% 
+  select(HHID, PN, ADAMSSID, AD_gold_A, ADAMS_WAVE_A)
+# N = 856
+wave_B_short =
+  wave_B %>% 
+  mutate(AD_gold_B = case_when(
+    BDFDX1 %in% c(1,2,3,4,5,6,7,8,10,11,13,14,15,16,17,18,19,32) ~ 2,   
+    BDFDX1 %in% c(20,21,22,23,24,25,26,27,28,29,30,33) ~ 1,
+    BDFDX1 == 31 ~ 0
+  )) %>% 
+  select(HHID, PN, ADAMSSID, AD_gold_B) %>% 
+  left_join(tracker) %>% 
+  rename(ADAMS_YEAR = BYEAR,
+         ADAMS_MONTH = BMONTH) %>% 
+  mutate(ADAMS_WAVE_B = ADAMS_YEAR + ADAMS_MONTH/12) %>% 
+  select(HHID, PN, ADAMSSID, AD_gold_B, ADAMS_WAVE_B)
+  # N = 252
+wave_C_short =
+  wave_C %>% 
+  mutate(AD_gold_C = case_when(
+    CDFDX1 %in% c(1,2,3,4,5,6,7,8,10,11,13,14,15,16,17,18,19,32) ~ 2,   
+    CDFDX1 %in% c(20,21,22,23,24,25,26,27,28,29,30,33) ~ 1,
+    CDFDX1 == 31 ~ 0
+  )) %>% 
+  select(HHID, PN, ADAMSSID, AD_gold_C) %>% 
+  left_join(tracker) %>% 
+  filter(CVITSTAT == 1) %>% 
+  rename(ADAMS_YEAR = CYEAR,
+         ADAMS_MONTH = CMONTH) %>% 
+  mutate(ADAMS_WAVE_C = ADAMS_YEAR + ADAMS_MONTH/12) %>% 
+  select(HHID, PN, ADAMSSID, AD_gold_C, ADAMS_WAVE_C)
+# N = 315
+wave_D_short =
+  wave_D %>% 
+  mutate(AD_gold_D = case_when(
+    DDFDX1 %in% c(1,2,3,4,5,6,7,8,10,11,13,14,15,16,17,18,19,32) ~ 2,   
+    DDFDX1 %in% c(20,21,22,23,24,25,26,27,28,29,30,33) ~ 1,
+    DDFDX1 == 31 ~ 0
+  )) %>% 
+  select(HHID, PN, ADAMSSID, AD_gold_D) %>% 
+  left_join(tracker) %>% 
+  filter(DVITSTAT == 1) %>% 
+  rename(ADAMS_YEAR = DYEAR,
+         ADAMS_MONTH = DMONTH) %>% 
+  mutate(ADAMS_WAVE_D = ADAMS_YEAR + ADAMS_MONTH/12) %>% 
+  select(HHID, PN, ADAMSSID, AD_gold_D, ADAMS_WAVE_D)
+# N = 217
+
+# Join all waves together
+joint_wave =
+  wave_A_short %>% 
+  full_join(wave_B_short) %>% 
+  full_join(wave_C_short) %>% 
+  full_join(wave_D_short)
+# N = 856
+```
+
+## 2) Wave imputation
+```{r}
+# Fill the dementia observations. Here we use the rule that if one has ever diagnosed as dementia (AD_gold = 1), then the following diagnosis 
+# would be dementia in the following waves, and we'll use mean(waveX) as the time of diagnosis (we need to tackle alive status -- 
+# only alive people can be imputed ~ also need to check in HRS RAND file)
+cog_toimpute = 
+  joint_wave %>% 
+  mutate(impute_AD_gold_B = case_when(
+    !is.na(AD_gold_B) ~ AD_gold_B,
+    AD_gold_A == 2 ~ AD_gold_A
+  )) %>% 
+  mutate(impute_ADAMS_WAVE_B = case_when(
+    !is.na(ADAMS_WAVE_B) ~ ADAMS_WAVE_B,
+    !is.na(impute_AD_gold_B) ~ mean(ADAMS_WAVE_B, na.rm = T)
+  )) %>% 
+  mutate(impute_B = case_when(
+    (is.na(AD_gold_B)) & (AD_gold_A == 2) ~ 1,
+    TRUE ~ 0
+  )) %>% 
+  mutate(impute_AD_gold_C = case_when(
+    !is.na(AD_gold_C) ~ AD_gold_C,
+    impute_AD_gold_B == 2 ~ impute_AD_gold_B
+  )) %>% 
+  mutate(impute_ADAMS_WAVE_C = case_when(
+    !is.na(ADAMS_WAVE_C) ~ ADAMS_WAVE_C,
+    !is.na(impute_AD_gold_C) ~ mean(ADAMS_WAVE_C, na.rm = T)
+  )) %>% 
+  mutate(impute_C = case_when(
+    (is.na(AD_gold_C)) & (impute_AD_gold_B == 2) ~ 1,
+    TRUE ~ 0
+  )) %>% 
+  mutate(impute_AD_gold_D = case_when(
+    !is.na(AD_gold_D) ~ AD_gold_D,
+    impute_AD_gold_C == 2 ~ impute_AD_gold_C
+  )) %>% 
+  mutate(impute_ADAMS_WAVE_D = case_when(
+    !is.na(ADAMS_WAVE_D) ~ ADAMS_WAVE_D,
+    !is.na(impute_AD_gold_D) ~ mean(ADAMS_WAVE_D, na.rm = T)
+  )) %>% 
+  mutate(impute_D = case_when(
+    (is.na(AD_gold_D)) & (impute_AD_gold_C == 2) ~ 1,
+    TRUE ~ 0
+  )) %>% 
+  select(HHID, PN, AD_gold_A, ADAMS_WAVE_A, impute_AD_gold_B, impute_ADAMS_WAVE_B, impute_B,
+         impute_AD_gold_C, impute_ADAMS_WAVE_C, impute_C, impute_AD_gold_D, impute_ADAMS_WAVE_D, impute_D)
+# Now we expand the df to long-format -- one record per row (a person could have multiple rows)
+wave_A_impute = cog_toimpute %>% select(HHID, PN, AD_gold_A, ADAMS_WAVE_A) %>% rename(AD_gold = AD_gold_A, wave_time = ADAMS_WAVE_A) %>% mutate(imputed = 0)
+wave_B_impute = cog_toimpute %>% select(HHID, PN, impute_AD_gold_B, impute_ADAMS_WAVE_B, impute_B) %>% rename(AD_gold = impute_AD_gold_B, wave_time = impute_ADAMS_WAVE_B, imputed = impute_B)
+wave_C_impute = cog_toimpute %>% select(HHID, PN, impute_AD_gold_C, impute_ADAMS_WAVE_C, impute_C) %>% rename(AD_gold = impute_AD_gold_C, wave_time = impute_ADAMS_WAVE_C, imputed = impute_C)
+wave_D_impute = cog_toimpute %>% select(HHID, PN, impute_AD_gold_D, impute_ADAMS_WAVE_D, impute_D) %>% rename(AD_gold = impute_AD_gold_D, wave_time = impute_ADAMS_WAVE_D, imputed = impute_D)
+cog_impute_long = rbind(wave_A_impute, wave_B_impute, wave_C_impute, wave_D_impute) %>% drop_na()
+# N = 2,651 -- Still, we need to check for vital status (back to HRS)
+# Read in HRS vital records
+hrs_vital =
+  HRS %>% 
+  mutate(HHID = str_pad(HHID, 6, pad = "0")) %>% mutate(PN = str_pad(PN, 3, pad = "0")) %>% 
+  select(HHID, PN, HALIVE, JALIVE, KALIVE, LALIVE, MALIVE)
+# Final check of the vital status in our dataset
+vital_check =
+  cog_impute_long %>% 
+  mutate(hrs_wave_near = 2 * round(wave_time/2)) %>% 
+  left_join(hrs_vital, by = c("HHID" = "HHID", "PN" = "PN")) %>% 
+  mutate(alive = case_when(
+    (hrs_wave_near == 2010 & MALIVE == 1) | (hrs_wave_near == 2008 & LALIVE == 1) | 
+      (hrs_wave_near == 2006 & KALIVE == 1) | (hrs_wave_near == 2004 & JALIVE == 1) | 
+      (hrs_wave_near == 2002 & HALIVE == 1) ~ 1,
+    TRUE ~ 0
+  )) %>% 
+  filter(alive == 1) %>% 
+  select(HHID, PN, AD_gold, hrs_wave_near, alive, imputed)
+# N = 1,867 -- Final ADAMS data to merge onto HRS
+vital_check %>% select(HHID, PN) %>% unique() %>% nrow()
+# n(patients) = 781
+
+#====== Calculate dementia&alive in each wave (just for recording use)=======
+wave_B_impute_alive =
+  wave_B_impute %>% 
+  mutate(hrs_wave_near = 2 * round(wave_time/2)) %>% 
+  left_join(hrs_vital, by = c("HHID" = "HHID", "PN" = "PN")) %>% 
+  mutate(alive = case_when(
+    (hrs_wave_near == 2010 & MALIVE == 1) | (hrs_wave_near == 2008 & LALIVE == 1) | 
+      (hrs_wave_near == 2006 & KALIVE == 1) | (hrs_wave_near == 2004 & JALIVE == 1) | 
+      (hrs_wave_near == 2002 & HALIVE == 1) ~ 1,
+    TRUE ~ 0
+  )) %>% 
+  filter(alive == 1 & imputed == 1) %>% 
+  drop_na() %>% unique()
+# N = 165
+wave_C_impute_alive =
+  wave_C_impute %>% 
+  mutate(hrs_wave_near = 2 * round(wave_time/2)) %>% 
+  left_join(hrs_vital, by = c("HHID" = "HHID", "PN" = "PN")) %>% 
+  mutate(alive = case_when(
+    (hrs_wave_near == 2010 & MALIVE == 1) | (hrs_wave_near == 2008 & LALIVE == 1) | 
+      (hrs_wave_near == 2006 & KALIVE == 1) | (hrs_wave_near == 2004 & JALIVE == 1) | 
+      (hrs_wave_near == 2002 & HALIVE == 1) ~ 1,
+    TRUE ~ 0
+  )) %>% 
+  filter(alive == 1 & imputed == 1) %>% 
+  drop_na() %>% unique()
+# N = 71
+wave_D_impute_alive =
+  wave_D_impute %>% 
+  mutate(hrs_wave_near = 2 * round(wave_time/2)) %>% 
+  left_join(hrs_vital, by = c("HHID" = "HHID", "PN" = "PN")) %>% 
+  mutate(alive = case_when(
+    (hrs_wave_near == 2010 & MALIVE == 1) | (hrs_wave_near == 2008 & LALIVE == 1) | 
+      (hrs_wave_near == 2006 & KALIVE == 1) | (hrs_wave_near == 2004 & JALIVE == 1) | 
+      (hrs_wave_near == 2002 & HALIVE == 1) ~ 1,
+    TRUE ~ 0
+  )) %>% 
+  filter(alive == 1 & imputed == 1) %>% 
+  drop_na() %>% unique()
+# N = 101
+```
+
+```{r new b method}
+cn = colnames(randhrs1992_2016v2)
+year = paste0('20', c('02','04','06','08','10'))
+all_data = tibble()
+for(i in 6:10){
+  string_starts = paste0('R', as.character(i))
+  match_cn = which(startsWith(cn, string_starts))
+
+  dat = randhrs1992_2016v2[, c(1, match_cn)]
+  tc = colnames(dat)[2:dim(dat)[2]]
+  colnames(dat)[2:dim(dat)[2]] = unlist(lapply(strsplit(tc, string_starts, fixed = T), `[[`, 2))
+  
+  dat$Year = year[i - 5]
+  all_data = all_data %>%
+    bind_rows(dat)
+}
+```
+
+
+```{r}
+rand_shorten =
+  all_data %>% 
+  select(HHIDPN, Year, PROXY, MSTAT, 
+         SHLT, HLTC, HOSP, NRSHOM, DOCTOR, HOMCAR, HLTHLM, ADLA, IADLZA, MOBILA, LGMUSA,
+         HIBP, DIAB, CANCR, LUNG, HEART, STROK, PSYCH, ARTHR, CESD, BMI, DRINK, CHOLST, SHLTC, ADLC,
+         SLFMEM, PSTMEM, IMRC, DLRC, BWC20, DY, MO, YR, DW, SCIS, CACT, PRES, VP, VOCAB)
+HRS_toMerge =
+  HRS %>% 
+  mutate(HHID = str_pad(HHID, 6, pad = "0")) %>% mutate(PN = str_pad(PN, 3, pad = "0")) %>% 
+  mutate(HHIDPN = as.numeric(paste0(HHID, PN))) %>% 
+  right_join(vital_check, by = c('HHID' = 'HHID', 'PN' = 'PN')) %>% 
+  # Race/ethnicity
+  mutate(RACE_SELF = case_when(
+    RACE == 2 ~ 1,
+    TRUE ~ 0
+  )) %>% 
+  left_join(kunkle_afric, by = c('HHID' = 'HHID', 'PN' = 'PN')) %>% 
+  left_join(kunkle_europ, by = c('HHID' = 'HHID', 'PN' = 'PN')) %>% 
+  mutate(PGS_AD_Kunkle_1 = case_when(
+    !is.na(AAPH13_KunkleNAPOE_PT_1) ~ AAPH13_KunkleNAPOE_PT_1,
+    !is.na(EAPH13_KunkleNAPOE_PT_1) ~ EAPH13_KunkleNAPOE_PT_1
+  )) %>% 
+  # Demographics
+  mutate(AGE = case_when(
+    hrs_wave_near == 2002 ~ 2002 - BIRTHYR,
+    hrs_wave_near == 2004 ~ 2004 - BIRTHYR,
+    hrs_wave_near == 2006 ~ 2006 - BIRTHYR,
+    hrs_wave_near == 2008 ~ 2008 - BIRTHYR,
+    hrs_wave_near == 2010 ~ 2010 - BIRTHYR
+  )) %>% 
+  mutate(SEX = GENDER - 1) %>% 
+  mutate(LIVING = case_when(
+    hrs_wave_near == 2002 ~ BEALE2003_02,
+    hrs_wave_near == 2004 ~ BEALE2003_04,
+    hrs_wave_near == 2006 ~ BEALE2003_06,
+    hrs_wave_near == 2008 ~ BEALE2003_08,
+    hrs_wave_near == 2010 ~ BEALE2003_10
+  )) %>% 
+  mutate(SMOKE = case_when(
+    hrs_wave_near == 2002 ~ smoke02,
+    hrs_wave_near == 2004 ~ smoke04,
+    hrs_wave_near == 2006 ~ smoke06,
+    hrs_wave_near == 2008 ~ smoke08,
+    hrs_wave_near == 2010 ~ smoke10
+  )) %>% 
+  mutate(PROXY_SCORE = case_when(
+    hrs_wave_near == 2002 ~ p_score02,
+    hrs_wave_near == 2004 ~ p_score04,
+    hrs_wave_near == 2006 ~ p_score06,
+    hrs_wave_near == 2008 ~ p_score08,
+    hrs_wave_near == 2010 ~ p_score10
+  )) %>% 
+  # AD langa-weir
+  mutate(AD_langa = case_when(
+    hrs_wave_near == 2002 ~ AD02,
+    hrs_wave_near == 2004 ~ AD04,
+    hrs_wave_near == 2006 ~ AD06,
+    hrs_wave_near == 2008 ~ AD08,
+    hrs_wave_near == 2010 ~ AD10
+  )) %>% 
+  mutate(SER7 = case_when(
+    hrs_wave_near == 2002 ~ R6SER7,
+    hrs_wave_near == 2004 ~ R7SER7,
+    hrs_wave_near == 2006 ~ R8SER7,
+    hrs_wave_near == 2008 ~ R9SER7,
+    hrs_wave_near == 2010 ~ R10SER7
+  )) %>% 
+  mutate(hrs_wave_near = as.character(hrs_wave_near)) %>% 
+  select(HHIDPN, AD_gold, AD_langa, hrs_wave_near, RACE_SELF, SCHLYRS, PGS_AD_Kunkle_1, APOE2010_bin, APOE2010_imputed, 
+         AGE, SEX, LIVING, SMOKE, PROXY_SCORE, SER7) 
+
+final_data =
+  HRS_toMerge %>% 
+  left_join(rand_shorten, by = c("HHIDPN" = "HHIDPN", "hrs_wave_near" = "Year")) %>% 
+  filter(!is.na(AD_langa)) %>% 
+  mutate(AD_langa_cat = case_when(
+    AD_langa == 3 ~ 0,
+    AD_langa == 2 ~ 1,
+    AD_langa == 1 ~ 2
+  )) %>% 
+  select(-AD_langa) %>% 
+  rename(AD_langa = AD_langa_cat) %>% 
+  mutate(LIVING = LIVING - 1) %>% 
+  mutate(MSTAT_ = case_when(
+    MSTAT == 1 | MSTAT == 3 ~ 0,
+    (!is.na(MSTAT)) ~ 1
+  )) %>% 
+  select(-MSTAT) %>% 
+  rename(MSTAT = MSTAT_) %>% 
+  mutate(HIBP_ = case_when(
+    HIBP == 0 | HIBP == 1 ~ HIBP,
+    HIBP == 3 ~ 1,
+    HIBP == 4 ~ 0
+  )) %>% 
+  select(-HIBP) %>% 
+  rename(HIBP = HIBP_) %>% 
+  mutate(DIAB_ = case_when(
+    DIAB == 0 | DIAB == 1 ~ DIAB,
+    DIAB == 3 ~ 1,
+    DIAB == 4 ~ 0
+  )) %>% 
+  select(-DIAB) %>% 
+  rename(DIAB = DIAB_) %>% 
+  mutate(CANCR_ = case_when(
+    CANCR == 0 | CANCR == 1 ~ CANCR,
+    CANCR == 3 ~ 1,
+    CANCR == 4 ~ 0
+  )) %>% 
+  select(-CANCR) %>% 
+  rename(CANCR = CANCR_) %>% 
+  mutate(LUNG_ = case_when(
+    LUNG == 0 | LUNG == 1 ~ LUNG,
+    LUNG == 3 ~ 1,
+    LUNG == 4 ~ 0
+  )) %>% 
+  select(-LUNG) %>% 
+  rename(LUNG = LUNG_) %>% 
+  mutate(HEART_ = case_when(
+    HEART == 0 | HEART == 1 ~ HEART,
+    HEART == 3 ~ 1,
+    HEART == 4 ~ 0
+  )) %>% 
+  select(-HEART) %>% 
+  rename(HEART = HEART_) %>% 
+  mutate(STROK_ = case_when(
+    STROK == 0 | STROK == 1 ~ STROK,
+    STROK == 2 | STROK == 3 ~ 1,
+    STROK == 4 ~ 0
+  )) %>% 
+  select(-STROK) %>% 
+  rename(STROK = STROK_) %>% 
+  mutate(PSYCH_ = case_when(
+    PSYCH == 0 | PSYCH == 1 ~ PSYCH,
+    PSYCH == 3 ~ 1,
+    PSYCH == 4 ~ 0
+  )) %>% 
+  select(-PSYCH) %>% 
+  rename(PSYCH = PSYCH_) %>% 
+  mutate(ARTHR_ = case_when(
+    ARTHR == 0 | ARTHR == 1 ~ ARTHR,
+    ARTHR == 3 ~ 1,
+    ARTHR == 4 ~ 0
+  )) %>% 
+  select(-ARTHR) %>% 
+  rename(ARTHR = ARTHR_) 
+# (1842, 56)
+save(final_data, file = "~/Desktop/2021_Winter/BEM228/Final_project/data/final_data.rda")
+
+# Check how many unique people in the final sample
+final_data %>% 
+  select(HHIDPN) %>% 
+  unique() %>% nrow()
+# N = 773
+```
+
+

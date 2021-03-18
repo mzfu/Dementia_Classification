@@ -1,0 +1,305 @@
+---
+title: "Data_Analysis"
+author: "Joy_Fu"
+date: "3/13/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Basic setups and loading data
+```{r message=FALSE, warning=FALSE, paged.print=FALSE}
+rm(list = ls())
+library(tidyverse)
+library(writexl)
+library(ggcorrplot)  
+library(compareGroups)
+library(epiflow)
+library(sjlabelled)
+library(naniar)
+library(caret)
+
+work_data_path = '~/Desktop/2021_Winter/BEM228/Final_project/data/'
+output_path = '~/Desktop/2021_Winter/BEM228/Final_project/output/'
+
+# Original dataset
+load(paste0(work_data_path, 'final_data.rda')) # N = 1842, nVar = 56
+attach(final_data)
+```
+
+# Part 1: Descriptive analysis
+## Data preparation
+```{r}
+# We need to build algorithms separated by self-respondants and proxy
+self_sample =
+  final_data %>% 
+  filter(PROXY == 0) 
+# N = 1,442
+proxy_sample =
+  final_data %>% 
+  filter(PROXY == 1)
+# N = 400
+write_csv(self_sample, file = "~/Desktop/2021_Winter/BEM228/Final_project/data/self_sample.csv")
+```
+
+## Diagnosing missing values -- Self-respondant sample
+```{r}
+missing_diag_self = 
+  self_sample %>% 
+  select(-c(PGS_AD_Kunkle_1, APOE2010_bin, APOE2010_imputed, PROXY_SCORE, HLTHLM, VOCAB, CHOLST))
+# Plot missingness
+pdf("~/Desktop/2021_Winter/BEM228/Final_project/output/missing_self_0315.pdf", width = 15, height = 7)
+vis_miss(missing_diag_self, cluster = T)
+gg_miss_upset(missing_diag_self)
+dev.off()
+```
+
+#=== Output as .csv for python modeling ===
+```{r}
+self_sample_nolabel = remove_all_labels(self_sample)
+df_self =
+  self_sample_nolabel %>% 
+  select(-c(PGS_AD_Kunkle_1, APOE2010_bin, APOE2010_imputed, PROXY_SCORE, HLTHLM, VOCAB, CHOLST)) %>% 
+  drop_na()
+# N = 1,356
+write_csv(df_self, file = "~/Desktop/2021_Winter/BEM228/Final_project/data/df_self.csv")
+
+# Split to test and train -- we want to keep the independent test set as consistant across all models
+set.seed(20210304)
+self_id = df_self %>% select(HHIDPN) %>% unique() %>% rownames_to_column(var = "index")
+# N = 580
+id_train = self_id %>% sample_frac(4/5) 
+id_test = anti_join(self_id, id_train, by = c('index' = 'index')) 
+id_train = id_train %>% mutate(train_test = "train") %>% select(-index)
+id_test = id_test %>% mutate(train_test = "test") %>% select(-index)
+# join back to df_self
+df_self_final = 
+  df_self %>% 
+  left_join(id_train, by = c('HHIDPN' = 'HHIDPN')) %>% 
+  left_join(id_test, by = c('HHIDPN' = 'HHIDPN')) %>% 
+  mutate(group = case_when(
+    !is.na(train_test.x) ~ train_test.x,
+    !is.na(train_test.y) ~ train_test.y
+  )) %>% 
+  select(-c(train_test.x, train_test.y)) 
+
+self_train = df_self_final %>% filter(group == "train") # N = 1094
+self_test = df_self_final %>% filter(group == "test") # N = 262
+
+# This is only for outputs
+self_train_out = self_train %>% select(-c(HHIDPN, group, hrs_wave_near))
+self_test_out = self_test %>% select(-c(HHIDPN, group, hrs_wave_near))
+# Output to csv for modeling
+write_csv(self_train_out, file = "~/Desktop/2021_Winter/BEM228/Final_project/data/self_train.csv")
+write_csv(self_test_out, file = "~/Desktop/2021_Winter/BEM228/Final_project/data/self_test.csv")
+```
+
+
+## Bivariate analysis
+### 1) Data preparation
+```{r}
+df_self_final_2 =
+  df_self_final %>% 
+  mutate(AD_cat = case_when(
+    AD_gold == 0 ~ "Normal",
+    AD_gold == 1 ~ "CIND",
+    AD_gold == 2 ~ "Dementia"
+  )) %>% 
+  mutate(AD_langa_cat = case_when(
+    AD_langa == 0 ~ "Normal",
+    AD_langa == 1 ~ "CIND",
+    AD_langa == 2 ~ "Dementia"
+  )) %>% 
+  mutate(race_cat = case_when(
+    RACE_SELF == 1 ~ "African",
+    RACE_SELF == 0 ~ "Non-African"
+  )) %>% 
+  mutate(sex_cat = case_when(
+    SEX == 0 ~ "Male",
+    SEX == 1 ~ "Female"
+  )) %>% 
+  mutate(living_cat = case_when(
+    LIVING == 0 ~ "Urban",
+    LIVING == 1 ~ "Suburban",
+    LIVING == 2 ~ "Exurban"
+  )) %>% 
+  mutate(smoking_cat = case_when(
+    SMOKE == 0 ~ "Never",
+    SMOKE == 1 ~ "Former",
+    SMOKE == 2 ~ "Current"
+  )) %>% 
+  mutate(hops_cat = case_when(
+    HOSP == 1 ~ "Yes",
+    HOSP == 0 ~ "No"
+  )) %>% 
+  mutate(nrshom_cat = case_when(
+    NRSHOM == 1 ~ "Yes",
+    NRSHOM == 0 ~ "No"
+  )) %>% 
+  mutate(doctor_cat = case_when(
+    DOCTOR == 1 ~ "Yes",
+    DOCTOR == 0 ~ "No"
+  )) %>% 
+  mutate(homcar_cat = case_when(
+    HOMCAR == 1 ~ "Yes",
+    HOMCAR == 0 ~ "No"
+  )) %>% 
+  mutate(drinking_cat = case_when(
+    DRINK == 0 ~ "Never",
+    DRINK == 1 ~ "Ever"
+  )) %>% 
+  mutate(mstat_cat = case_when(
+    MSTAT == 1 ~ "Single",
+    MSTAT == 0 ~ "Married"
+  )) %>% 
+  mutate(hibp_cat = case_when(
+    HIBP == 0 ~ "No",
+    HIBP == 1 ~ "Yes"
+  )) %>% 
+  mutate(diab_cat = case_when(
+    DIAB == 1 ~ "Yes",
+    DIAB == 0 ~ "No"
+  )) %>% 
+  mutate(cancr_cat = case_when(
+    CANCR == 1 ~ "Yes",
+    CANCR == 0 ~ "No"
+  )) %>% 
+  mutate(lung_cat = case_when(
+    LUNG == 1 ~ "Yes",
+    LUNG == 0 ~ "No"
+  )) %>% 
+  mutate(heart_cat = case_when(
+    HEART == 1 ~ "Yes",
+    HEART == 0 ~ "No"
+  )) %>% 
+  mutate(strok_cat = case_when(
+    STROK == 1 ~ "Yes",
+    STROK == 0 ~ "No"
+  )) %>% 
+  mutate(psych_cat = case_when(
+    PSYCH == 1 ~ "Yes",
+    PSYCH == 0 ~ "No"
+  )) %>% 
+  mutate(arthr_cat = case_when(
+    ARTHR == 1 ~ "Yes",
+    ARTHR == 0 ~ "No"
+  )) 
+```
+
+### 2) Output Table 1: by cognitive status
+```{r}
+# Build table: 1. Cognitive status
+table1_cog_self = descrTable(AD_cat ~ race_cat + sex_cat + living_cat + smoking_cat + hops_cat + nrshom_cat + doctor_cat + homcar_cat +
+                               drinking_cat + mstat_cat + hibp_cat + diab_cat + cancr_cat + lung_cat + heart_cat + strok_cat + psych_cat + arthr_cat +
+                               SCHLYRS + AGE + SER7 + SHLT + HLTC + ADLA + IADLZA + MOBILA + LGMUSA + CESD + BMI + SHLTC + ADLC + SLFMEM +
+                               PSTMEM + IMRC + DLRC + BWC20 + DY + MO + YR + DW + SCIS + CACT + PRES + VP,
+                             df_self_final_2, hide.no = "No", show.all = T)
+compareGroups::export2csv(table1_cog_self, file = paste0(output_path, 'cognitive_bivariate_self.csv'))
+```
+
+### 3) Output Table 2: by training/testing set
+```{r}
+table1_cog_group = descrTable(group ~ AD_cat + race_cat + sex_cat + living_cat + smoking_cat + hops_cat + nrshom_cat + doctor_cat + homcar_cat +
+                               drinking_cat + mstat_cat + hibp_cat + diab_cat + cancr_cat + lung_cat + heart_cat + strok_cat + psych_cat + arthr_cat +
+                               SCHLYRS + AGE + SER7 + SHLT + HLTC + ADLA + IADLZA + MOBILA + LGMUSA + CESD + BMI + SHLTC + ADLC + SLFMEM +
+                               PSTMEM + IMRC + DLRC + BWC20 + DY + MO + YR + DW + SCIS + CACT + PRES + VP,
+                             df_self_final_2, hide.no = "No", show.all = T)
+compareGroups::export2csv(table1_cog_group, file = paste0(output_path, 'train_test_self.csv'))
+```
+
+#=== Model evaluation ===
+```{r}
+# Read in output results from python
+output_testing = read.csv('~/Desktop/2021_Winter/BEM228/Final_project/output/classfication_outputs.csv', sep = ",")
+```
+
+## 1. Expert model
+```{r}
+# Data preparation
+self_train_interaction = 
+  self_train %>% 
+  mutate(AGE_CENTER = AGE - 70) %>% 
+  mutate(date_recall = if_else((DY + MO + YR + DW) >= 1, 1, 0)) %>% 
+  mutate(name_recall = if_else((SCIS + CACT + PRES + VP) >= 1, 1, 0))
+self_test_interaction = 
+  self_test %>% 
+  mutate(AGE_CENTER = AGE - 70) %>% 
+  mutate(date_recall = if_else((DY + MO + YR + DW) >= 1, 1, 0)) %>% 
+  mutate(name_recall = if_else((SCIS + CACT + PRES + VP) >= 1, 1, 0))
+```
+
+```{r}
+# Multinomial logistic regression
+library(nnet)
+self_train_interaction$AD_cat2 = relevel(as.factor(self_train_interaction$AD_gold), ref = "0")
+expert_model = multinom(AD_cat2 ~ AGE_CENTER + AGE_CENTER*AGE_CENTER + SEX + RACE_SELF + SCHLYRS + RACE_SELF*SCHLYRS + SHLT + ADLA + IADLZA + 
+                          AGE_CENTER*IADLZA + DIAB + SER7 + SER7*RACE_SELF + SER7*SCHLYRS + SER7*SHLT + IMRC + DLRC + IMRC*SHLT + DLRC*SHLT + date_recall + 
+                          date_recall*IADLZA + name_recall + name_recall*RACE_SELF + name_recall*IADLZA, data = self_train_interaction)
+# summary(expert_model)
+expert_predict = predict(expert_model, newdata = self_test_interaction)
+output_testing['predicted_label_expert'] = expert_predict
+```
+
+
+```{r}
+# Check for Langa-Weir classification 
+conf_mat_tab = table(output_testing$AD_langa, output_testing$AD_gold)
+langa_result = confusionMatrix(conf_mat_tab)
+langa_result$byClass
+```
+
+```{r}
+langa_result$overall
+```
+
+```{r}
+# Check for Langa-Weir classification 
+conf_mat_tab = table(output_testing$predicted_label_expert, output_testing$AD_gold)
+expert_result = confusionMatrix(conf_mat_tab)
+expert_result$byClass
+```
+
+```{r}
+expert_result$overall
+```
+
+```{r}
+# Check for Langa-Weir classification 
+conf_mat_tab = table(output_testing$predicted_label_ada, output_testing$AD_gold)
+ada_result = confusionMatrix(conf_mat_tab)
+ada_result$byClass
+```
+
+```{r}
+ada_result$overall
+```
+
+```{r}
+# Check for Langa-Weir classification 
+conf_mat_tab = table(output_testing$predicted_label_rf, output_testing$AD_gold)
+rf_result = confusionMatrix(conf_mat_tab)
+rf_result$byClass
+```
+
+```{r}
+rf_result$overall
+```
+
+```{r}
+# Check for Langa-Weir classification 
+conf_mat_tab = table(output_testing$predicted_label_lr, output_testing$AD_gold)
+lr_result = confusionMatrix(conf_mat_tab)
+lr_result$byClass
+```
+
+```{r}
+lr_result$overall
+```
+
+
+
+
+
+
